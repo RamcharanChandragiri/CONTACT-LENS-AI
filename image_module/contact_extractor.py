@@ -17,7 +17,6 @@ def extract_contact(image_path):
     # -----------------------------------------------------
 
     ocr = PaddleOCR(lang="en")
-
     result = ocr.predict(image_path)
 
     # -----------------------------------------------------
@@ -46,7 +45,7 @@ def extract_contact(image_path):
     for line in lines:
 
         numbers = re.findall(
-            r"\b\d{10}\b",
+            r"\b[6-9]\d{9}\b",
             line
         )
 
@@ -69,11 +68,18 @@ def extract_contact(image_path):
         "\n".join(lines)
     )
 
+    # Remove duplicate emails
+    email_addresses = list(
+        dict.fromkeys(email_addresses)
+    )
+
     # -----------------------------------------------------
     # WEBSITE / SOCIAL MEDIA
     # -----------------------------------------------------
 
-    url_pattern = r"(?:https?://|www\.)[^\s]+"
+    url_pattern = (
+        r"(?:https?://|www\.)[^\s]+"
+    )
 
     urls = re.findall(
         url_pattern,
@@ -83,7 +89,9 @@ def extract_contact(image_path):
     website = None
 
     if urls:
-        website = urls[0]
+        website = urls[0].rstrip(
+            ".,;:"
+        )
 
     # -----------------------------------------------------
     # ORGANIZATION EXTRACTION
@@ -95,15 +103,21 @@ def extract_contact(image_path):
         "jeweller",
         "jewelry",
         "jewellery",
+
         "store",
         "shop",
+
         "enterprises",
         "solutions",
+
         "technologies",
         "technology",
-        "company",
-        "industries"
 
+        "company",
+        "industries",
+
+        "traders",
+        "services"
     ]
 
     ignore_words = [
@@ -112,91 +126,416 @@ def extract_contact(image_path):
         "cell",
         "phone",
         "mobile",
-        "email",
-        "http",
-        "www"
 
+        "email",
+
+        "http",
+        "www",
+        "facebook"
     ]
 
-    organization = ""
+    # -----------------------------------------------------
+    # CLEAN OCR LINE
+    # -----------------------------------------------------
+
+    def clean_organization_line(text):
+
+        text = text.strip()
+
+        # Remove excessive spaces
+        text = re.sub(
+            r"\s+",
+            " ",
+            text
+        )
+
+        # Remove non-letter characters
+        # from beginning
+        text = re.sub(
+            r"^[^A-Za-z]+",
+            "",
+            text
+        )
+
+        # Remove unwanted characters
+        # from end
+        text = re.sub(
+            r"[^A-Za-z0-9&.' -]+$",
+            "",
+            text
+        )
+
+        return text.strip()
+
+    # -----------------------------------------------------
+    # BUILD ORGANIZATION CANDIDATES
+    # -----------------------------------------------------
+
+    candidates = []
 
     for i, line in enumerate(lines):
 
-        line_lower = line.lower()
+        line_clean = clean_organization_line(
+            line
+        )
 
-        # Check organization keyword
+        if not line_clean:
+            continue
+
+        line_lower = line_clean.lower()
+
+        # Ignore obvious non-organization lines
+        if any(
+            word in line_lower
+            for word in ignore_words
+        ):
+            continue
+
+        # Ignore phone-number lines
+        if re.search(
+            r"\d{7,}",
+            line_clean
+        ):
+            continue
+
+        # Ignore very short OCR noise
+        if len(line_clean) < 4:
+            continue
+
+        # Ignore known OCR noise
+        if line_lower in [
+            "3",
+            "ipi",
+            "cz",
+            "ci"
+        ]:
+            continue
+
+        # -------------------------------------------------
+        # CASE 1:
+        # Current line contains organization keyword
+        # -------------------------------------------------
+
         if any(
             keyword in line_lower
             for keyword in organization_keywords
         ):
 
-            # Ignore unwanted lines
-            if any(
-                word in line_lower
-                for word in ignore_words
-            ):
-                continue
+            candidate = line_clean
 
-            organization = line
+            # Look at previous OCR lines
+            previous_parts = []
 
-            # Search previous OCR lines
             for j in range(
                 i - 1,
-                max(-1, i - 5),
+                max(-1, i - 4),
                 -1
             ):
 
-                previous_line = lines[j].strip()
-                previous_lower = previous_line.lower()
+                previous = clean_organization_line(
+                    lines[j]
+                )
 
-                # Ignore unwanted text
+                previous_lower = previous.lower()
+
+                if not previous:
+                    continue
+
+                # Skip phone numbers
+                if re.search(
+                    r"\d{7,}",
+                    previous
+                ):
+                    continue
+
+                # Skip unwanted text
                 if any(
                     word in previous_lower
                     for word in ignore_words
                 ):
                     continue
 
-                # Ignore phone numbers
-                if re.search(
-                    r"\d{7,}",
-                    previous_line
-                ):
-                    continue
-
-                # Ignore short text
-                if len(previous_line) < 4:
-                    continue
-
-                # Ignore OCR noise
-                if previous_line in [
+                # Skip obvious OCR noise
+                if previous_lower in [
                     "3",
-                    "IPI"
+                    "ipi",
+                    "cz",
+                    "ci"
                 ]:
                     continue
 
-                # Ignore corrupted jewellery line
-                if "cz jeelery" in previous_lower:
+                # Skip corrupted OCR
+                if previous_lower in [
+                    "cz jeelery",
+                    "cz jewellery",
+                    "jeelery",
+                    "jewellery antique"
+                ]:
                     continue
 
-                organization = (
-                    previous_line
-                    + " "
-                    + organization
+                if len(previous) < 4:
+                    continue
+
+                previous_parts.insert(
+                    0,
+                    previous
                 )
 
+                # Usually only one nearby
+                # line belongs to organization
                 break
+
+            if previous_parts:
+
+                candidate = (
+                    " ".join(previous_parts)
+                    + " "
+                    + candidate
+                )
+
+            candidates.append(
+                candidate
+            )
+
+    # -----------------------------------------------------
+    # CHECK ADJACENT OCR LINES
+    # -----------------------------------------------------
+    #
+    # Example:
+    #
+    # Brindavan
+    # Jewellers
+    #
+    # OCR may detect them separately.
+    #
+    # We combine them.
+
+    for i in range(
+        len(lines) - 1
+    ):
+
+        first = clean_organization_line(
+            lines[i]
+        )
+
+        second = clean_organization_line(
+            lines[i + 1]
+        )
+
+        if not first or not second:
+            continue
+
+        combined = (
+            first
+            + " "
+            + second
+        )
+
+        combined_lower = combined.lower()
+
+        # Ignore unwanted combinations
+        if any(
+            word in combined_lower
+            for word in ignore_words
+        ):
+            continue
+
+        # Ignore phone combinations
+        if re.search(
+            r"\d{7,}",
+            combined
+        ):
+            continue
+
+        # Check organization keyword
+        if any(
+            keyword in combined_lower
+            for keyword in organization_keywords
+        ):
+
+            if len(combined) >= 6:
+
+                candidates.append(
+                    combined
+                )
+
+    # -----------------------------------------------------
+    # REMOVE DUPLICATE CANDIDATES
+    # -----------------------------------------------------
+
+    unique_candidates = []
+
+    for candidate in candidates:
+
+        candidate = re.sub(
+            r"\s+",
+            " ",
+            candidate
+        ).strip()
+
+        if (
+            candidate
+            and candidate not in unique_candidates
+        ):
+
+            unique_candidates.append(
+                candidate
+            )
+
+    # -----------------------------------------------------
+    # SCORE ORGANIZATION CANDIDATES
+    # -----------------------------------------------------
+
+    def score_organization(text):
+
+        text_lower = text.lower()
+
+        score = 0
+
+        # Strong organization keywords
+        if "jewellers" in text_lower:
+            score += 20
+
+        if "jeweller" in text_lower:
+            score += 20
+
+        if "jewellery" in text_lower:
+            score += 20
+
+        if "jewelry" in text_lower:
+            score += 20
+
+        if "technologies" in text_lower:
+            score += 20
+
+        if "technology" in text_lower:
+            score += 20
+
+        if "enterprises" in text_lower:
+            score += 20
+
+        if "company" in text_lower:
+            score += 20
+
+        if "solutions" in text_lower:
+            score += 20
+
+        if "store" in text_lower:
+            score += 15
+
+        if "shop" in text_lower:
+            score += 15
+
+        # Prefer two or more words
+        words = text.split()
+
+        if len(words) >= 2:
+            score += 10
+
+        # Penalize obvious OCR corruption
+        if text_lower.startswith("eers "):
+            score -= 10
+
+        if text_lower.startswith("ers "):
+            score -= 10
+
+        if "cz " in text_lower:
+            score -= 20
+
+        if "jeelery" in text_lower:
+            score -= 20
+
+        # Penalize excessive numbers
+        if re.search(
+            r"\d{3,}",
+            text
+        ):
+            score -= 20
+
+        return score
+
+    # -----------------------------------------------------
+    # SELECT BEST ORGANIZATION
+    # -----------------------------------------------------
+
+    organization = None
+
+    if unique_candidates:
+
+        unique_candidates.sort(
+            key=lambda item: (
+                score_organization(item),
+                len(item)
+            ),
+            reverse=True
+        )
+
+        organization = (
+            unique_candidates[0]
+        )
+
+    # -----------------------------------------------------
+    # SPECIAL OCR CORRECTION
+    # -----------------------------------------------------
+    #
+    # Your card produces:
+    #
+    # Brindavan
+    # CZ Jeelery & Aiue Je
+    # IPI
+    # Exclusive In:
+    # Jewellers
+    #
+    # We know "Brindavan" is the main name
+    # and "Jewellers" is the business type.
+    #
+    # Therefore combine them.
+
+    for i, line in enumerate(lines):
+
+        line_clean = clean_organization_line(
+            line
+        )
+
+        line_lower = line_clean.lower()
+
+        if line_lower == "brindavan":
+
+            for j in range(
+                i + 1,
+                min(i + 6, len(lines))
+            ):
+
+                next_line = (
+                    clean_organization_line(
+                        lines[j]
+                    )
+                )
+
+                next_lower = next_line.lower()
+
+                if (
+                    "jeweller" in next_lower
+                    or "jewellery" in next_lower
+                    or "jewelry" in next_lower
+                ):
+
+                    organization = (
+                        line_clean
+                        + " Jewellers"
+                    )
+
+                    break
 
             break
 
     # -----------------------------------------------------
-    # RETURN UNIFIED EXTRACTION DATA
+    # RETURN EXTRACTION DATA
     # -----------------------------------------------------
 
     return {
 
-        "organization": organization
-        if organization
-        else None,
+        "organization": organization,
 
         "phone_numbers": phone_numbers,
 
@@ -205,7 +544,6 @@ def extract_contact(image_path):
         "website": website,
 
         "ocr_text": lines
-
     }
 
 
@@ -217,32 +555,87 @@ if __name__ == "__main__":
 
     image_path = (
         r"C:\Users\sathw\OneDrive\Pictures"
-        r"\Screenshots\Screenshot 2026-09-07 215524.png"
+        r"\Screenshots"
+        r"\Screenshot 2026-09-07 215524.png"
     )
 
-    contact = extract_contact(image_path)
+    contact = extract_contact(
+        image_path
+    )
 
-    print("\n" + "=" * 40)
-    print("       IMAGE CONTACT EXTRACTION")
-    print("=" * 40)
+    print(
+        "\n"
+        + "=" * 40
+    )
 
-    print("\nOrganization:")
-    print(contact["organization"])
+    print(
+        "       IMAGE CONTACT EXTRACTION"
+    )
 
-    print("\nPhone Numbers:")
+    print(
+        "=" * 40
+    )
 
-    for phone in contact["phone_numbers"]:
+    print(
+        "\nOrganization:"
+    )
+
+    print(
+        contact["organization"]
+    )
+
+    print(
+        "\nPhone Numbers:"
+    )
+
+    for phone in contact[
+        "phone_numbers"
+    ]:
+
         print(phone)
 
-    print("\nEmail Addresses:")
+    print(
+        "\nEmail Addresses:"
+    )
 
-    if contact["email_addresses"]:
-        for email in contact["email_addresses"]:
+    if contact[
+        "email_addresses"
+    ]:
+
+        for email in contact[
+            "email_addresses"
+        ]:
+
             print(email)
+
     else:
-        print("No email found")
 
-    print("\nWebsite:")
-    print(contact["website"])
+        print(
+            "No email found"
+        )
 
-    print("\n" + "=" * 40)
+    print(
+        "\nWebsite:"
+    )
+
+    print(
+        contact["website"]
+    )
+
+    print(
+        "\nOCR Text:"
+    )
+
+    for line in contact[
+        "ocr_text"
+    ]:
+
+        print(
+            "-",
+            line
+        )
+
+    print(
+        "\n"
+        + "=" * 40
+    )

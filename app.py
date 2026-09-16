@@ -203,23 +203,36 @@ def choose_organization(results):
 # =========================================================
 
 def transcribe_voice(audio_bytes):
-
     if not audio_bytes:
         return ""
 
+    # Detect the actual audio container instead of trusting the
+    # filename/extension. This prevents WebM audio from being
+    # written as a fake .wav file if the browser/component falls
+    # back to WebM.
+    if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+        suffix = ".wav"
+    elif audio_bytes[:4] == b"\x1aE\xdf\xa3":
+        suffix = ".webm"
+    elif audio_bytes[:4] == b"OggS":
+        suffix = ".ogg"
+    elif audio_bytes[:3] == b"ID3" or audio_bytes[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        suffix = ".mp3"
+    elif b"ftyp" in audio_bytes[:32]:
+        suffix = ".m4a"
+    else:
+        # The recorder is configured for WAV, so use WAV as the
+        # fallback for an unknown header.
+        suffix = ".wav"
+
     temp_audio = tempfile.NamedTemporaryFile(
         delete=False,
-        suffix=".wav"
+        suffix=suffix
     )
 
     try:
-
         temp_audio.write(audio_bytes)
         temp_audio.close()
-
-        # IMPORTANT:
-        # Existing speech_to_text.py provides
-        # transcribe_audio(), not speech_to_text()
 
         transcript = transcribe_audio(
             temp_audio.name
@@ -230,16 +243,9 @@ def transcribe_voice(audio_bytes):
         ) or ""
 
     finally:
-
-        if os.path.exists(
-            temp_audio.name
-        ):
-
+        if os.path.exists(temp_audio.name):
             try:
-                os.remove(
-                    temp_audio.name
-                )
-
+                os.remove(temp_audio.name)
             except Exception:
                 pass
 
@@ -423,6 +429,13 @@ if "voice_website" not in st.session_state:
 
 if "voice_address" not in st.session_state:
     st.session_state.voice_address = ""
+
+# Version counters used to safely refresh a field after voice input
+# without modifying a Streamlit widget key after it is created.
+for _field in ("name", "organization", "phones", "email", "website", "address"):
+    _version_key = f"voice_field_version_{_field}"
+    if _version_key not in st.session_state:
+        st.session_state[_version_key] = 0
 
 
 # =========================================================
@@ -894,7 +907,7 @@ if (
         [6, 1]
     )
 
-    name_key = f"name_{st.session_state.scan_id}"
+    name_key = f"name_{st.session_state.scan_id}_{st.session_state.voice_field_version_name}"
 
     default_name = (
         st.session_state.voice_name
@@ -919,6 +932,7 @@ if (
             stop_prompt="⏹️",
             just_once=True,
             use_container_width=True,
+            format="wav",
             key=f"name_voice_{st.session_state.scan_id}"
         )
 
@@ -932,9 +946,8 @@ if (
 
             if spoken_name:
 
-                st.session_state.voice_name = (
-                    spoken_name
-                )
+                st.session_state.voice_name = spoken_name
+                st.session_state.voice_field_version_name += 1
 
                 st.success(
                     "🎙️ Contact name captured."
@@ -963,7 +976,7 @@ if (
     )
 
     organization_key = (
-        f"organization_{st.session_state.scan_id}"
+        f"organization_{st.session_state.scan_id}_{st.session_state.voice_field_version_organization}"
     )
 
     default_organization = (
@@ -988,6 +1001,7 @@ if (
             stop_prompt="⏹️",
             just_once=True,
             use_container_width=True,
+            format="wav",
             key=(
                 f"organization_voice_"
                 f"{st.session_state.scan_id}"
@@ -1004,9 +1018,8 @@ if (
 
             if spoken_organization:
 
-                st.session_state.voice_organization = (
-                    spoken_organization
-                )
+                st.session_state.voice_organization = spoken_organization
+                st.session_state.voice_field_version_organization += 1
 
                 st.success(
                     "🎙️ Organization captured."
@@ -1035,7 +1048,7 @@ if (
     )
 
     phone_key = (
-        f"phones_{st.session_state.scan_id}"
+        f"phones_{st.session_state.scan_id}_{st.session_state.voice_field_version_phones}"
     )
 
     default_phones = (
@@ -1064,6 +1077,7 @@ if (
             stop_prompt="⏹️",
             just_once=True,
             use_container_width=True,
+            format="wav",
             key=(
                 f"phones_voice_"
                 f"{st.session_state.scan_id}"
@@ -1086,9 +1100,8 @@ if (
 
             if spoken_phones:
 
-                st.session_state.voice_phones = (
-                    ", ".join(spoken_phones)
-                )
+                st.session_state.voice_phones = ", ".join(spoken_phones)
+                st.session_state.voice_field_version_phones += 1
 
                 st.success(
                     "🎙️ Phone number captured."
@@ -1124,7 +1137,7 @@ if (
     )
 
     email_key = (
-        f"email_{st.session_state.scan_id}"
+        f"email_{st.session_state.scan_id}_{st.session_state.voice_field_version_email}"
     )
 
     default_email = (
@@ -1149,6 +1162,7 @@ if (
             stop_prompt="⏹️",
             just_once=True,
             use_container_width=True,
+            format="wav",
             key=(
                 f"email_voice_"
                 f"{st.session_state.scan_id}"
@@ -1171,9 +1185,8 @@ if (
 
             if spoken_email:
 
-                st.session_state.voice_email = (
-                    spoken_email
-                )
+                st.session_state.voice_email = spoken_email
+                st.session_state.voice_field_version_email += 1
 
                 st.success(
                     "🎙️ Email captured."
@@ -1202,7 +1215,7 @@ if (
     )
 
     website_key = (
-        f"website_{st.session_state.scan_id}"
+        f"website_{st.session_state.scan_id}_{st.session_state.voice_field_version_website}"
     )
 
     default_website = (
@@ -1227,6 +1240,7 @@ if (
             stop_prompt="⏹️",
             just_once=True,
             use_container_width=True,
+            format="wav",
             key=(
                 f"website_voice_"
                 f"{st.session_state.scan_id}"
@@ -1249,9 +1263,8 @@ if (
 
             if spoken_website:
 
-                st.session_state.voice_website = (
-                    spoken_website
-                )
+                st.session_state.voice_website = spoken_website
+                st.session_state.voice_field_version_website += 1
 
                 st.success(
                     "🎙️ Website captured."
@@ -1280,7 +1293,7 @@ if (
     )
 
     address_key = (
-        f"address_{st.session_state.scan_id}"
+        f"address_{st.session_state.scan_id}_{st.session_state.voice_field_version_address}"
     )
 
     default_address = (
@@ -1305,6 +1318,7 @@ if (
             stop_prompt="⏹️",
             just_once=True,
             use_container_width=True,
+            format="wav",
             key=(
                 f"address_voice_"
                 f"{st.session_state.scan_id}"
@@ -1321,9 +1335,8 @@ if (
 
             if spoken_address:
 
-                st.session_state.voice_address = (
-                    spoken_address
-                )
+                st.session_state.voice_address = spoken_address
+                st.session_state.voice_field_version_address += 1
 
                 st.success(
                     "🎙️ Address captured."
